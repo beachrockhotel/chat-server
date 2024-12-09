@@ -1,37 +1,11 @@
-package main
+package grpc_client
 
 import (
-	"context"
-	"log"
-	"time"
+	"fmt"
 
-	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
 	"github.com/fatih/color"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-)
-
-const (
-	address = "localhost:50051"
-	authID  = 12
 )
 
 func main() {
-	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		log.Fatalf("failed to connect to server: %v", err)
-	}
-	defer conn.Close()
-
-	c := desc.NewChatV1Client(conn)
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	r, err := c.Get(ctx, &desc.GetRequest{Id: authID})
-	if err != nil {
-		log.Fatalf("failed to get user by id: %d", chatID)
-	}
-
-	log.Printf(color.RedString("User info:\n") + color.GreenString("%+v", r.GetInfo()))
+	fmt.Println(color.GreenString("Hello, world!"))
 }
