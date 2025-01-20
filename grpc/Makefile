@@ -14,7 +14,7 @@ generate:
 generate-auth-api:
 	@mkdir -p pkg/chat_v1
 	@protoc \
-		--proto_path=grpc/api \
-		--go_out=pkg/chat_v1 --go_opt=paths=source_relative \
-		--go-grpc_out=pkg/chat_v1 --go-grpc_opt=paths=source_relative \
+		--proto_path=api \
+		--go_out=paths=source_relative:pkg \
+		--go-grpc_out=paths=source_relative:pkg \
 		api/chat_v1/chat.proto
