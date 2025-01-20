@@ -1,4 +1,4 @@
-module github.com/beachrockhotel/chat-server
+module github.com/beachrockhotel/chat-server/grpc
 
 go 1.22
 
