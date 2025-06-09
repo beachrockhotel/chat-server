@@ -6,12 +6,12 @@ import (
 )
 
 type Implementation struct {
-	desc.UnimplementedAuthV1Server
-	authService service.ChatService
+	desc.UnimplementedChatV1Server
+	chatService service.ChatService
 }
 
-func NewImplementation(authService service.ChatService) *Implementation {
+func NewImplementation(chatService service.ChatService) *Implementation {
 	return &Implementation{
-		authService: authService,
+		chatService: chatService,
 	}
 }

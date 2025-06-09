@@ -9,9 +9,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection"
 
-	"github.com/beachrockhotel/auth/internal/closer"
-	"github.com/beachrockhotel/auth/internal/config"
-	desc "github.com/beachrockhotel/auth/pkg/auth_v1"
+	"github.com/beachrockhotel/chat-server/internal/closer"
+	"github.com/beachrockhotel/chat-server/internal/config"
+	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
 )
 
 type App struct {
@@ -75,7 +75,7 @@ func (a *App) initGRPCServer(ctx context.Context) error {
 
 	reflection.Register(a.grpcServer)
 
-	desc.RegisterAuthV1Server(a.grpcServer, a.serviceProvider.AuthImpl(ctx))
+	desc.RegisterChatV1Server(a.grpcServer, a.serviceProvider.ChatImpl(ctx))
 
 	return nil
 }

@@ -4,16 +4,16 @@ import (
 	"context"
 	"log"
 
-	"github.com/beachrockhotel/auth/internal/api/auth"
-	"github.com/beachrockhotel/auth/internal/client/db"
-	"github.com/beachrockhotel/auth/internal/client/db/pg"
-	"github.com/beachrockhotel/auth/internal/client/db/transaction"
-	"github.com/beachrockhotel/auth/internal/closer"
-	"github.com/beachrockhotel/auth/internal/config"
-	"github.com/beachrockhotel/auth/internal/repository"
-	authRepository "github.com/beachrockhotel/auth/internal/repository/auth"
-	"github.com/beachrockhotel/auth/internal/service"
-	authService "github.com/beachrockhotel/auth/internal/service/auth"
+	"github.com/beachrockhotel/chat-server/internal/api/chat"
+	"github.com/beachrockhotel/chat-server/internal/client/db"
+	"github.com/beachrockhotel/chat-server/internal/client/db/pg"
+	"github.com/beachrockhotel/chat-server/internal/client/db/transaction"
+	"github.com/beachrockhotel/chat-server/internal/closer"
+	"github.com/beachrockhotel/chat-server/internal/config"
+	"github.com/beachrockhotel/chat-server/internal/repository"
+	authRepository "github.com/beachrockhotel/chat-server/internal/repository/chat"
+	"github.com/beachrockhotel/chat-server/internal/service"
+	authService "github.com/beachrockhotel/chat-server/internal/service/auth"
 )
 
 type serviceProvider struct {
@@ -26,7 +26,7 @@ type serviceProvider struct {
 
 	authService service.AuthService
 
-	authImpl *auth.Implementation
+	authImpl *chat.Implementation
 }
 
 func newServiceProvider() *serviceProvider {
@@ -86,29 +86,29 @@ func (s *serviceProvider) TxManager(ctx context.Context) db.TxManager {
 	return s.txManager
 }
 
-func (s *serviceProvider) AuthRepository(ctx context.Context) repository.AuthRepository {
-	if s.authRepository == nil {
-		s.authRepository = authRepository.NewRepository(s.DBClient(ctx))
+func (s *serviceProvider) ChatRepository(ctx context.Context) repository.ChatRepository {
+	if s.chatRepository == nil {
+		s.chatRepository = chatRepository.NewRepository(s.DBClient(ctx))
 	}
 
-	return s.authRepository
+	return s.chatRepository
 }
 
-func (s *serviceProvider) AuthService(ctx context.Context) service.AuthService {
-	if s.authService == nil {
-		s.authService = authService.NewService(
-			s.AuthRepository(ctx),
+func (s *serviceProvider) ChatService(ctx context.Context) service.ChatService {
+	if s.chatService == nil {
+		s.chatService = chatService.NewService(
+			s.ChatRepository(ctx),
 			s.TxManager(ctx),
 		)
 	}
 
-	return s.authService
+	return s.chatService
 }
 
-func (s *serviceProvider) AuthImpl(ctx context.Context) *auth.Implementation {
-	if s.authImpl == nil {
-		s.authImpl = auth.NewImplementation(s.AuthService(ctx))
+func (s *serviceProvider) ChatImpl(ctx context.Context) *chat.Implementation {
+	if s.chatImpl == nil {
+		s.chatImpl = chat.NewImplementation(s.ChatService(ctx))
 	}
 
-	return s.authImpl
+	return s.chatImpl
 }

@@ -9,7 +9,7 @@ import (
 )
 
 func (i *Implementation) Create(ctx context.Context, req *desc.CreateRequest) (*desc.CreateResponse, error) {
-	id, err := i.authService.Create(ctx, converter.ToChatInfoFromDesc(req.GetInfo()))
+	id, err := i.chatService.Create(ctx, converter.ToChatInfoFromDesc(req.GetInfo()))
 	if err != nil {
 		return nil, err
 	}

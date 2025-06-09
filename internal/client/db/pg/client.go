@@ -6,7 +6,7 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/beachrockhotel/auth/internal/client/db"
+	"github.com/beachrockhotel/chat-server/internal/client/db"
 )
 
 type pgClient struct {

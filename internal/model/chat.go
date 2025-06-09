@@ -6,15 +6,16 @@ import (
 	"time"
 )
 
-type Auth struct {
+type Chat struct {
 	ID        int64
 	Info      AuthInfo
 	CreatedAt time.Time
 	UpdatedAt sql.NullTime
 }
 
-type AuthInfo struct {
-	Name  string
-	Email string
-	Role  auth_v1.Role
+type ChatInfo struct {
+	Name     string
+	Email    string
+	Role     auth_v1.Role
+	Password string
 }

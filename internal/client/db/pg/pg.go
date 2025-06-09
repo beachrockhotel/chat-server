@@ -10,8 +10,8 @@ import (
 	"github.com/georgysavva/scany/v2/pgxscan"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/beachrockhotel/auth/internal/client/db"
-	"github.com/beachrockhotel/auth/internal/client/db/prettier"
+	"github.com/beachrockhotel/chat-server/internal/client/db"
+	"github.com/beachrockhotel/chat-server/internal/client/db/prettier"
 )
 
 type key string

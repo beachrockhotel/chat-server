@@ -1,19 +1,19 @@
-package auth
+package chat
 
 import (
 	"context"
 
 	sq "github.com/Masterminds/squirrel"
 
-	"github.com/beachrockhotel/auth/internal/client/db"
-	"github.com/beachrockhotel/auth/internal/model"
-	"github.com/beachrockhotel/auth/internal/repository"
-	"github.com/beachrockhotel/auth/internal/repository/auth/converter"
-	modelRepo "github.com/beachrockhotel/auth/internal/repository/auth/model"
+	"github.com/beachrockhotel/chat-server/internal/client/db"
+	"github.com/beachrockhotel/chat-server/internal/model"
+	"github.com/beachrockhotel/chat-server/internal/repository"
+	"github.com/beachrockhotel/chat-server/internal/repository/chat/converter"
+	modelRepo "github.com/beachrockhotel/chat-server/internal/repository/chat/model"
 )
 
 const (
-	tableName = "auth"
+	tableName = "chat"
 
 	idColumn        = "id"
 	nameColumn      = "name"
@@ -28,11 +28,11 @@ type repo struct {
 	db db.Client
 }
 
-func NewRepository(db db.Client) repository.AuthRepository {
+func NewRepository(db db.Client) repository.ChatRepository {
 	return &repo{db: db}
 }
 
-func (r *repo) Create(ctx context.Context, info *model.AuthInfo) (int64, error) {
+func (r *repo) Create(ctx context.Context, info *model.ChatInfo) (int64, error) {
 	builder := sq.Insert(tableName).
 		PlaceholderFormat(sq.Dollar).
 		Columns(nameColumn, emailColumn, roleColumn, passwordColumn).
@@ -45,7 +45,7 @@ func (r *repo) Create(ctx context.Context, info *model.AuthInfo) (int64, error) 
 	}
 
 	q := db.Query{
-		Name:     "auth_repository.Create",
+		Name:     "chat_repository.Create",
 		QueryRaw: query,
 	}
 
@@ -58,7 +58,7 @@ func (r *repo) Create(ctx context.Context, info *model.AuthInfo) (int64, error) 
 	return id, nil
 }
 
-func (r *repo) Get(ctx context.Context, id int64) (*model.Auth, error) {
+func (r *repo) Get(ctx context.Context, id int64) (*model.Chat, error) {
 	builder := sq.Select(idColumn, nameColumn, emailColumn, roleColumn, createdAtColumn, updatedAtColumn).
 		PlaceholderFormat(sq.Dollar).
 		From(tableName).
@@ -71,15 +71,15 @@ func (r *repo) Get(ctx context.Context, id int64) (*model.Auth, error) {
 	}
 
 	q := db.Query{
-		Name:     "auth_repository.Get",
+		Name:     "chat_repository.Get",
 		QueryRaw: query,
 	}
 
-	var auth modelRepo.Auth
+	var chat modelRepo.Chat
 	err = r.db.DB().QueryRowContext(ctx, q, args...).Scan(&auth.ID, &auth.Info.Name, &auth.Info.Email, &auth.Info.Role, &auth.CreatedAt, &auth.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 
-	return converter.ToAuthFromRepo(&auth), nil
+	return converter.ToAuthFromRepo(&chat), nil
 }

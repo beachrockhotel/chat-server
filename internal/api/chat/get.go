@@ -9,7 +9,7 @@ import (
 )
 
 func (i *Implementation) Get(ctx context.Context, req *desc.GetRequest) (*desc.GetResponse, error) {
-	authObj, err := i.authService.Get(ctx, req.GetId())
+	authObj, err := i.chatService.Get(ctx, req.GetId())
 	if err != nil {
 		return nil, err
 	}
