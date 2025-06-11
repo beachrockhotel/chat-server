@@ -2,7 +2,6 @@ package model
 
 import (
 	"database/sql"
-	"github.com/beachrockhotel/chat-server/pkg/chat_v1"
 	"time"
 )
 

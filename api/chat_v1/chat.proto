@@ -23,7 +23,7 @@ message Chat {
 
 message ChatInfo {
   string title = 1;
-  string usernames = 2; // ты используешь string, не repeated string
+  string usernames = 2;
 }
 
 message CreateRequest {

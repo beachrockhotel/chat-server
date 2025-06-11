@@ -94,7 +94,7 @@ func (x *Chat) GetUpdatedAt() *timestamppb.Timestamp {
 type ChatInfo struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Title         string                 `protobuf:"bytes,1,opt,name=title,proto3" json:"title,omitempty"`
-	Usernames     string                 `protobuf:"bytes,2,opt,name=usernames,proto3" json:"usernames,omitempty"` // ты используешь string, не repeated string
+	Usernames     string                 `protobuf:"bytes,2,opt,name=usernames,proto3" json:"usernames,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
