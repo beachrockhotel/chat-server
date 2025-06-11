@@ -11,9 +11,9 @@ import (
 	"github.com/beachrockhotel/chat-server/internal/closer"
 	"github.com/beachrockhotel/chat-server/internal/config"
 	"github.com/beachrockhotel/chat-server/internal/repository"
-	authRepository "github.com/beachrockhotel/chat-server/internal/repository/chat"
+	chatRepository "github.com/beachrockhotel/chat-server/internal/repository/chat"
 	"github.com/beachrockhotel/chat-server/internal/service"
-	authService "github.com/beachrockhotel/chat-server/internal/service/auth"
+	chatService "github.com/beachrockhotel/chat-server/internal/service/chat"
 )
 
 type serviceProvider struct {
@@ -22,11 +22,11 @@ type serviceProvider struct {
 
 	dbClient       db.Client
 	txManager      db.TxManager
-	authRepository repository.AuthRepository
+	chatRepository repository.ChatRepository
 
-	authService service.AuthService
+	chatService service.ChatService
 
-	authImpl *chat.Implementation
+	chatImpl *chat.Implementation
 }
 
 func newServiceProvider() *serviceProvider {

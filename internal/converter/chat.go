@@ -23,18 +23,14 @@ func ToChatFromService(chat *model.Chat) *desc.Chat {
 
 func ToChatInfoFromService(info model.ChatInfo) *desc.ChatInfo {
 	return &desc.ChatInfo{
-		Name:     info.Name,
-		Email:    info.Email,
-		Role:     info.Role,
-		Password: info.Password,
+		Title:     info.Title,
+		Usernames: info.Usernames,
 	}
 }
 
 func ToChatInfoFromDesc(info *desc.ChatInfo) *model.ChatInfo {
 	return &model.ChatInfo{
-		Name:     info.Name,
-		Email:    info.Email,
-		Role:     info.Role,
-		Password: info.Password,
+		Title:     info.Title,
+		Usernames: info.Usernames,
 	}
 }
