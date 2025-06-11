@@ -15,7 +15,7 @@ func ToChatFromService(chat *model.Chat) *desc.Chat {
 
 	return &desc.Chat{
 		Id:        chat.ID,
-		Info:      ToChatInfoFromService(сhat.Info),
+		Info:      ToChatInfoFromService(chat.Info),
 		CreatedAt: timestamppb.New(chat.CreatedAt),
 		UpdatedAt: updatedAt,
 	}
