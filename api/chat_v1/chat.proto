@@ -5,20 +5,41 @@ package chat_v1;
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
 
-option go_package = ".github.com/beachrockhotel/chat-server/pkg/chat_v1;chat_v1";
+option go_package = "github.com/beachrockhotel/chat-server/pkg/chat_v1;chat_v1";
 
 service ChatV1 {
   rpc Create(CreateRequest) returns (CreateResponse);
+  rpc Get(GetRequest) returns (GetResponse);
   rpc Delete(DeleteRequest) returns (google.protobuf.Empty);
   rpc SendMessage(SendMessageRequest) returns (google.protobuf.Empty);
 }
 
+message Chat {
+  int64 id = 1;
+  ChatInfo info = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message ChatInfo {
+  string title = 1;
+  string usernames = 2; // ты используешь string, не repeated string
+}
+
 message CreateRequest {
-  repeated string usernames = 1;
+  ChatInfo info = 1;
 }
 
 message CreateResponse {
   int64 id = 1;
+}
+
+message GetRequest {
+  int64 id = 1;
+}
+
+message GetResponse {
+  Chat chat = 1;
 }
 
 message DeleteRequest {

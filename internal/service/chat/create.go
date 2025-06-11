@@ -3,7 +3,7 @@ package chat
 import (
 	"context"
 
-	"github.com/beachrockhotel/chat/internal/model"
+	"github.com/beachrockhotel/chat-server/internal/model"
 )
 
 func (s *serv) Create(ctx context.Context, info *model.ChatInfo) (int64, error) {

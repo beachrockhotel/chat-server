@@ -13,8 +13,7 @@ import (
 )
 
 const (
-	tableName = "chat"
-
+	tableName       = "chat"
 	idColumn        = "id"
 	titleColumn     = "title"
 	usernamesColumn = "usernames"

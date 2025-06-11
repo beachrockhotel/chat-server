@@ -1,9 +1,9 @@
 package chat
 
 import (
-	"github.com/beachrockhotel/chat/internal/client/db"
-	"github.com/beachrockhotel/chat/internal/repository"
-	"github.com/beachrockhotel/chat/internal/service"
+	"github.com/beachrockhotel/chat-server/internal/client/db"
+	"github.com/beachrockhotel/chat-server/internal/repository"
+	"github.com/beachrockhotel/chat-server/internal/service"
 )
 
 type serv struct {
