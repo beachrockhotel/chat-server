@@ -16,10 +16,8 @@ const (
 	tableName = "chat"
 
 	idColumn        = "id"
-	nameColumn      = "name"
-	emailColumn     = "email"
-	roleColumn      = "role"
-	passwordColumn  = "password"
+	titleColumn     = "title"
+	usernamesColumn = "usernames"
 	createdAtColumn = "created_at"
 	updatedAtColumn = "updated_at"
 )
@@ -35,8 +33,8 @@ func NewRepository(db db.Client) repository.ChatRepository {
 func (r *repo) Create(ctx context.Context, info *model.ChatInfo) (int64, error) {
 	builder := sq.Insert(tableName).
 		PlaceholderFormat(sq.Dollar).
-		Columns(nameColumn, emailColumn, roleColumn, passwordColumn).
-		Values(info.Name, info.Email, info.Role, info.Password).
+		Columns(titleColumn, usernamesColumn).
+		Values(info.Title, info.Usernames).
 		Suffix("RETURNING id")
 
 	query, args, err := builder.ToSql()
@@ -59,7 +57,7 @@ func (r *repo) Create(ctx context.Context, info *model.ChatInfo) (int64, error) 
 }
 
 func (r *repo) Get(ctx context.Context, id int64) (*model.Chat, error) {
-	builder := sq.Select(idColumn, nameColumn, emailColumn, roleColumn, createdAtColumn, updatedAtColumn).
+	builder := sq.Select(idColumn, titleColumn, usernamesColumn, createdAtColumn, updatedAtColumn).
 		PlaceholderFormat(sq.Dollar).
 		From(tableName).
 		Where(sq.Eq{idColumn: id}).
@@ -76,10 +74,10 @@ func (r *repo) Get(ctx context.Context, id int64) (*model.Chat, error) {
 	}
 
 	var chat modelRepo.Chat
-	err = r.db.DB().QueryRowContext(ctx, q, args...).Scan(&auth.ID, &auth.Info.Name, &auth.Info.Email, &auth.Info.Role, &auth.CreatedAt, &auth.UpdatedAt)
+	err = r.db.DB().QueryRowContext(ctx, q, args...).Scan(&chat.ID, &chat.Info.Title, &chat.Info.Usernames, &chat.CreatedAt, &chat.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 
-	return converter.ToAuthFromRepo(&chat), nil
+	return converter.ToChatFromRepo(&chat), nil
 }

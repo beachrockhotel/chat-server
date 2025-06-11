@@ -2,7 +2,6 @@ include .env
 
 LOCAL_BIN := $(CURDIR)/bin
 
-# === DEPS ===
 install-deps:
 	@echo "Installing protoc-gen-go and protoc-gen-go-grpc..."
 	@GOBIN=$(LOCAL_BIN) go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28.1
@@ -14,7 +13,6 @@ get-deps:
 	@go get -u google.golang.org/protobuf/cmd/protoc-gen-go
 	@go get -u google.golang.org/grpc/cmd/protoc-gen-go-grpc
 
-# === PROTO GENERATION ===
 generate: generate-chat-api
 
 generate-chat-api:
@@ -25,7 +23,6 @@ generate-chat-api:
 		--go-grpc_out=paths=source_relative:pkg \
 		api/chat_v1/chat.proto
 
-# === MIGRATIONS ===
 LOCAL_MIGRATION_DIR := $(MIGRATION_DIR)
 LOCAL_MIGRATION_DSN := "host=localhost port=$(PG_PORT) dbname=$(PG_DATABASE_NAME) user=$(PG_USER) password=$(PG_PASSWORD) sslmode=disable"
 
