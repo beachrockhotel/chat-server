@@ -1,0 +1,1351 @@
+==== ./show_sources.sh ====
+#!/bin/bash
+
+# Выходной файл
+OUTPUT_FILE="sources_dump.txt"
+> "$OUTPUT_FILE"  # Очистить файл перед началом
+
+# Каталоги и шаблоны, которые надо исключить
+EXCLUDE_DIRS=("bin" ".git" ".idea")
+EXCLUDE_FILES=("go.mod" "go.sum")
+EXCLUDE_PATTERNS=("*.pb.go" "*.pb" "*.exe" "*.so" "*.out" "*.a")
+
+# Проверка: исключить ли файл по имени
+should_exclude_file() {
+    local filename="$1"
+
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+        if [[ "$filename" == $pattern ]]; then
+            return 0
+        fi
+    done
+
+    for f in "${EXCLUDE_FILES[@]}"; do
+        if [[ "$(basename "$filename")" == "$f" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# Основной проход по всем файлам
+find . -type f | while read -r file; do
+    # Пропуск исключённых директорий
+    skip_file=0
+    for dir in "${EXCLUDE_DIRS[@]}"; do
+        if [[ "$file" == ./$dir/* ]]; then
+            skip_file=1
+            break
+        fi
+    done
+
+    if [ "$skip_file" -eq 1 ]; then
+        continue
+    fi
+
+    # Пропуск по расширению или имени
+    if should_exclude_file "$file"; then
+        continue
+    fi
+
+    # Убедиться, что это текстовый файл
+    if file "$file" | grep -qvE 'text|ASCII'; then
+        continue
+    fi
+
+    # Запись пути и содержимого в файл
+    {
+        echo "==== $file ===="
+        cat "$file"
+        echo
+    } >> "$OUTPUT_FILE"
+done
+
+echo "Содержимое сохранено в $OUTPUT_FILE"
+==== ./Makefile ====
+include .env
+
+LOCAL_BIN := $(CURDIR)/bin
+
+install-deps:
+	@echo "Installing protoc-gen-go and protoc-gen-go-grpc..."
+	@GOBIN=$(LOCAL_BIN) go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28.1
+	@GOBIN=$(LOCAL_BIN) go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.2
+	@echo "Installing goose..."
+	@GOBIN=$(LOCAL_BIN) go install github.com/pressly/goose/v3/cmd/goose@v3.14.0
+
+get-deps:
+	@go get -u google.golang.org/protobuf/cmd/protoc-gen-go
+	@go get -u google.golang.org/grpc/cmd/protoc-gen-go-grpc
+
+generate: generate-chat-api
+
+generate-chat-api:
+	@mkdir -p pkg/chat_v1
+	@protoc \
+		--proto_path=api \
+		--go_out=paths=source_relative:pkg \
+		--go-grpc_out=paths=source_relative:pkg \
+		api/chat_v1/chat.proto
+
+LOCAL_MIGRATION_DIR := $(MIGRATION_DIR)
+LOCAL_MIGRATION_DSN := "host=localhost port=$(PG_PORT) dbname=$(PG_DATABASE_NAME) user=$(PG_USER) password=$(PG_PASSWORD) sslmode=disable"
+
+local-migration-status:
+	$(LOCAL_BIN)/goose -dir ${LOCAL_MIGRATION_DIR} postgres ${LOCAL_MIGRATION_DSN} status -v
+
+local-migration-up:
+	$(LOCAL_BIN)/goose -dir ${LOCAL_MIGRATION_DIR} postgres ${LOCAL_MIGRATION_DSN} up -v
+
+local-migration-down:
+	$(LOCAL_BIN)/goose -dir ${LOCAL_MIGRATION_DIR} postgres ${LOCAL_MIGRATION_DSN} down -v
+
+==== ./.gitignore ====
+.idea
+/grpc/bin/
+==== ./internal/converter/chat.go ====
+package converter
+
+import (
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/beachrockhotel/chat-server/internal/model"
+	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
+)
+
+func ToChatFromService(chat *model.Chat) *desc.Chat {
+	var updatedAt *timestamppb.Timestamp
+	if chat.UpdatedAt.Valid {
+		updatedAt = timestamppb.New(chat.UpdatedAt.Time)
+	}
+
+	return &desc.Chat{
+		Id:        chat.ID,
+		Info:      ToChatInfoFromService(chat.Info),
+		CreatedAt: timestamppb.New(chat.CreatedAt),
+		UpdatedAt: updatedAt,
+	}
+}
+
+func ToChatInfoFromService(info model.ChatInfo) *desc.ChatInfo {
+	return &desc.ChatInfo{
+		Title:     info.Title,
+		Usernames: info.Usernames,
+	}
+}
+
+func ToChatInfoFromDesc(info *desc.ChatInfo) *model.ChatInfo {
+	return &model.ChatInfo{
+		Title:     info.Title,
+		Usernames: info.Usernames,
+	}
+}
+
+==== ./internal/closer/closer.go ====
+package closer
+
+import (
+	"log"
+	"os"
+	"os/signal"
+	"sync"
+)
+
+var globalCloser = New()
+
+// Add adds `func() error` callback to the globalCloser
+func Add(f ...func() error) {
+	globalCloser.Add(f...)
+}
+
+// Wait ...
+func Wait() {
+	globalCloser.Wait()
+}
+
+// CloseAll ...
+func CloseAll() {
+	globalCloser.CloseAll()
+}
+
+// Closer ...
+type Closer struct {
+	mu    sync.Mutex
+	once  sync.Once
+	done  chan struct{}
+	funcs []func() error
+}
+
+// New returns new Closer, if []os.Signal is specified Closer will automatically call CloseAll when one of signals is received from OS
+func New(sig ...os.Signal) *Closer {
+	c := &Closer{done: make(chan struct{})}
+	if len(sig) > 0 {
+		go func() {
+			ch := make(chan os.Signal, 1)
+			signal.Notify(ch, sig...)
+			<-ch
+			signal.Stop(ch)
+			c.CloseAll()
+		}()
+	}
+	return c
+}
+
+// Add func to closer
+func (c *Closer) Add(f ...func() error) {
+	c.mu.Lock()
+	c.funcs = append(c.funcs, f...)
+	c.mu.Unlock()
+}
+
+// Wait blocks until all closer functions are done
+func (c *Closer) Wait() {
+	<-c.done
+}
+
+// CloseAll calls all closer functions
+func (c *Closer) CloseAll() {
+	c.once.Do(func() {
+		defer close(c.done)
+
+		c.mu.Lock()
+		funcs := c.funcs
+		c.funcs = nil
+		c.mu.Unlock()
+
+		// call all Closer funcs async
+		errs := make(chan error, len(funcs))
+		for _, f := range funcs {
+			go func(f func() error) {
+				errs <- f()
+			}(f)
+		}
+
+		for i := 0; i < cap(errs); i++ {
+			if err := <-errs; err != nil {
+				log.Println("error returned from Closer")
+			}
+		}
+	})
+}
+
+==== ./internal/client/db/transaction/transaction.go ====
+package transaction
+
+import (
+	"context"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/pkg/errors"
+
+	"github.com/beachrockhotel/chat-server/internal/client/db"
+	"github.com/beachrockhotel/chat-server/internal/client/db/pg"
+)
+
+type manager struct {
+	db db.Transactor
+}
+
+// NewTransactionManager создает новый менеджер транзакций, который удовлетворяет интерфейсу db.TxManager
+func NewTransactionManager(db db.Transactor) db.TxManager {
+	return &manager{
+		db: db,
+	}
+}
+
+// transaction основная функция, которая выполняет указанный пользователем обработчик в транзакции
+func (m *manager) transaction(ctx context.Context, opts pgx.TxOptions, fn db.Handler) (err error) {
+	// Если это вложенная транзакция, пропускаем инициацию новой транзакции и выполняем обработчик.
+	tx, ok := ctx.Value(pg.TxKey).(pgx.Tx)
+	if ok {
+		return fn(ctx)
+	}
+
+	// Стартуем новую транзакцию.
+	tx, err = m.db.BeginTx(ctx, opts)
+	if err != nil {
+		return errors.Wrap(err, "can't begin transaction")
+	}
+
+	// Кладем транзакцию в контекст.
+	ctx = pg.MakeContextTx(ctx, tx)
+
+	// Настраиваем функцию отсрочки для отката или коммита транзакции.
+	defer func() {
+		// восстанавливаемся после паники
+		if r := recover(); r != nil {
+			err = errors.Errorf("panic recovered: %v", r)
+		}
+
+		// откатываем транзакцию, если произошла ошибка
+		if err != nil {
+			if errRollback := tx.Rollback(ctx); errRollback != nil {
+				err = errors.Wrapf(err, "errRollback: %v", errRollback)
+			}
+
+			return
+		}
+
+		// если ошибок не было, коммитим транзакцию
+		if nil == err {
+			err = tx.Commit(ctx)
+			if err != nil {
+				err = errors.Wrap(err, "tx commit failed")
+			}
+		}
+	}()
+
+	// Выполните код внутри транзакции.
+	// Если функция терпит неудачу, возвращаем ошибку, и функция отсрочки выполняет откат
+	// или в противном случае транзакция коммитится.
+	if err = fn(ctx); err != nil {
+		err = errors.Wrap(err, "failed executing code inside transaction")
+	}
+
+	return err
+}
+
+func (m *manager) ReadCommitted(ctx context.Context, f db.Handler) error {
+	txOpts := pgx.TxOptions{IsoLevel: pgx.ReadCommitted}
+	return m.transaction(ctx, txOpts, f)
+}
+
+==== ./internal/client/db/pg/client.go ====
+package pg
+
+import (
+	"context"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/pkg/errors"
+
+	"github.com/beachrockhotel/chat-server/internal/client/db"
+)
+
+type pgClient struct {
+	masterDBC db.DB
+}
+
+func New(ctx context.Context, dsn string) (db.Client, error) {
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to parse config")
+	}
+
+	dbc, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create pool")
+	}
+
+	return &pgClient{
+		masterDBC: &pg{dbc: dbc},
+	}, nil
+}
+
+func (c *pgClient) DB() db.DB {
+	return c.masterDBC
+}
+
+func (c *pgClient) Close() error {
+	if c.masterDBC != nil {
+		c.masterDBC.Close()
+	}
+
+	return nil
+}
+
+==== ./internal/client/db/pg/pg.go ====
+package pg
+
+import (
+	"context"
+	"fmt"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"log"
+
+	"github.com/georgysavva/scany/v2/pgxscan"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/beachrockhotel/chat-server/internal/client/db"
+	"github.com/beachrockhotel/chat-server/internal/client/db/prettier"
+)
+
+type key string
+
+const (
+	TxKey key = "tx"
+)
+
+type pg struct {
+	dbc *pgxpool.Pool
+}
+
+func NewDB(dbc *pgxpool.Pool) db.DB {
+	return &pg{
+		dbc: dbc,
+	}
+}
+
+func (p *pg) ScanOneContext(ctx context.Context, dest interface{}, q db.Query, args ...interface{}) error {
+	logQuery(ctx, q, args...)
+
+	row, err := p.QueryContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+
+	return pgxscan.ScanOne(dest, row)
+}
+
+func (p *pg) ScanAllContext(ctx context.Context, dest interface{}, q db.Query, args ...interface{}) error {
+	logQuery(ctx, q, args...)
+
+	rows, err := p.QueryContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+
+	return pgxscan.ScanAll(dest, rows)
+}
+
+func (p *pg) ExecContext(ctx context.Context, q db.Query, args ...interface{}) (pgconn.CommandTag, error) {
+	logQuery(ctx, q, args...)
+
+	tx, ok := ctx.Value(TxKey).(pgx.Tx)
+	if ok {
+		return tx.Exec(ctx, q.QueryRaw, args...)
+	}
+
+	return p.dbc.Exec(ctx, q.QueryRaw, args...)
+}
+
+func (p *pg) QueryContext(ctx context.Context, q db.Query, args ...interface{}) (pgx.Rows, error) {
+	logQuery(ctx, q, args...)
+
+	tx, ok := ctx.Value(TxKey).(pgx.Tx)
+	if ok {
+		return tx.Query(ctx, q.QueryRaw, args...)
+	}
+
+	return p.dbc.Query(ctx, q.QueryRaw, args...)
+}
+
+func (p *pg) QueryRowContext(ctx context.Context, q db.Query, args ...interface{}) pgx.Row {
+	logQuery(ctx, q, args...)
+
+	tx, ok := ctx.Value(TxKey).(pgx.Tx)
+	if ok {
+		return tx.QueryRow(ctx, q.QueryRaw, args...)
+	}
+
+	return p.dbc.QueryRow(ctx, q.QueryRaw, args...)
+}
+
+func (p *pg) BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error) {
+	return p.dbc.BeginTx(ctx, txOptions)
+}
+
+func (p *pg) Ping(ctx context.Context) error {
+	return p.dbc.Ping(ctx)
+}
+
+func (p *pg) Close() {
+	p.dbc.Close()
+}
+
+func MakeContextTx(ctx context.Context, tx pgx.Tx) context.Context {
+	return context.WithValue(ctx, TxKey, tx)
+}
+
+func logQuery(ctx context.Context, q db.Query, args ...interface{}) {
+	prettyQuery := prettier.Pretty(q.QueryRaw, prettier.PlaceholderDollar, args...)
+	log.Println(
+		ctx,
+		fmt.Sprintf("sql: %s", q.Name),
+		fmt.Sprintf("query: %s", prettyQuery),
+	)
+}
+
+==== ./internal/client/db/db.go ====
+package db
+
+import (
+	"context"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+// Handler - функция, которая выполняется в транзакции
+type Handler func(ctx context.Context) error
+
+// Client клиент для работы с БД
+type Client interface {
+	DB() DB
+	Close() error
+}
+
+// TxManager менеджер транзакций, который выполняет указанный пользователем обработчик в транзакции
+type TxManager interface {
+	ReadCommitted(ctx context.Context, f Handler) error
+}
+
+// Query обертка над запросом, хранящая имя запроса и сам запрос
+// Имя запроса используется для логирования и потенциально может использоваться еще где-то, например, для трейсинга
+type Query struct {
+	Name     string
+	QueryRaw string
+}
+
+// Transactor интерфейс для работы с транзакциями
+type Transactor interface {
+	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
+}
+
+// SQLExecer комбинирует NamedExecer и QueryExecer
+type SQLExecer interface {
+	NamedExecer
+	QueryExecer
+}
+
+// NamedExecer интерфейс для работы с именованными запросами с помощью тегов в структурах
+type NamedExecer interface {
+	ScanOneContext(ctx context.Context, dest interface{}, q Query, args ...interface{}) error
+	ScanAllContext(ctx context.Context, dest interface{}, q Query, args ...interface{}) error
+}
+
+// QueryExecer интерфейс для работы с обычными запросами
+type QueryExecer interface {
+	ExecContext(ctx context.Context, q Query, args ...interface{}) (pgconn.CommandTag, error)
+	QueryContext(ctx context.Context, q Query, args ...interface{}) (pgx.Rows, error)
+	QueryRowContext(ctx context.Context, q Query, args ...interface{}) pgx.Row
+}
+
+// Pinger интерфейс для проверки соединения с БД
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
+// DB интерфейс для работы с БД
+type DB interface {
+	SQLExecer
+	Transactor
+	Pinger
+	Close()
+}
+
+==== ./internal/client/db/prettier/query_prettier.go ====
+package prettier
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+const (
+	PlaceholderDollar   = "$"
+	PlaceholderQuestion = "?"
+)
+
+func Pretty(query string, placeholder string, args ...any) string {
+	for i, param := range args {
+		var value string
+		switch v := param.(type) {
+		case string:
+			value = fmt.Sprintf("%q", v)
+		case []byte:
+			value = fmt.Sprintf("%q", string(v))
+		default:
+			value = fmt.Sprintf("%v", v)
+		}
+
+		query = strings.Replace(query, fmt.Sprintf("%s%s", placeholder, strconv.Itoa(i+1)), value, -1)
+	}
+
+	query = strings.ReplaceAll(query, "\t", "")
+	query = strings.ReplaceAll(query, "\n", " ")
+
+	return strings.TrimSpace(query)
+}
+
+==== ./internal/model/chat.go ====
+package model
+
+import (
+	"database/sql"
+	"time"
+)
+
+type Chat struct {
+	ID        int64
+	Info      ChatInfo
+	CreatedAt time.Time
+	UpdatedAt sql.NullTime
+}
+
+type ChatInfo struct {
+	Title     string
+	Usernames string
+}
+
+==== ./internal/service/service.go ====
+package service
+
+import (
+	"context"
+	"github.com/beachrockhotel/chat-server/internal/model"
+)
+
+type ChatService interface {
+	Create(ctx context.Context, info *model.ChatInfo) (int64, error)
+	Get(ctx context.Context, id int64) (*model.Chat, error)
+}
+
+==== ./internal/service/chat/get.go ====
+package chat
+
+import (
+	"context"
+
+	"github.com/beachrockhotel/chat-server/internal/model"
+)
+
+func (s *serv) Get(ctx context.Context, id int64) (*model.Chat, error) {
+	chat, err := s.chatRepository.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	return chat, nil
+}
+
+==== ./internal/service/chat/service.go ====
+package chat
+
+import (
+	"github.com/beachrockhotel/chat-server/internal/client/db"
+	"github.com/beachrockhotel/chat-server/internal/repository"
+	"github.com/beachrockhotel/chat-server/internal/service"
+)
+
+type serv struct {
+	chatRepository repository.ChatRepository
+	txManager      db.TxManager
+}
+
+func NewService(
+	chatRepository repository.ChatRepository,
+	txManager db.TxManager,
+) service.ChatService {
+	return &serv{
+		chatRepository: chatRepository,
+		txManager:      txManager,
+	}
+}
+
+==== ./internal/service/chat/create.go ====
+package chat
+
+import (
+	"context"
+
+	"github.com/beachrockhotel/chat-server/internal/model"
+)
+
+func (s *serv) Create(ctx context.Context, info *model.ChatInfo) (int64, error) {
+	var id int64
+	err := s.txManager.ReadCommitted(ctx, func(ctx context.Context) error {
+		var errTx error
+		id, errTx = s.chatRepository.Create(ctx, info)
+		if errTx != nil {
+			return errTx
+		}
+
+		_, errTx = s.chatRepository.Get(ctx, id)
+		if errTx != nil {
+			return errTx
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return 0, err
+	}
+
+	return id, nil
+}
+
+==== ./internal/repository/chat/converter/chat.go ====
+package converter
+
+import (
+	"github.com/beachrockhotel/chat-server/internal/model"
+	modelRepo "github.com/beachrockhotel/chat-server/internal/repository/chat/model"
+)
+
+func ToChatFromRepo(chat *modelRepo.Chat) *model.Chat {
+	return &model.Chat{
+		ID:        chat.ID,
+		Info:      ToChatInfoFromRepo(chat.Info),
+		CreatedAt: chat.CreatedAt,
+		UpdatedAt: chat.UpdatedAt,
+	}
+}
+
+func ToChatInfoFromRepo(info modelRepo.ChatInfo) model.ChatInfo {
+	return model.ChatInfo{
+		Title:     info.Title,
+		Usernames: info.Usernames,
+	}
+}
+
+==== ./internal/repository/chat/model/сhat.go ====
+package model
+
+import (
+	"database/sql"
+	"time"
+)
+
+type Chat struct {
+	ID        int64
+	Info      ChatInfo
+	CreatedAt time.Time
+	UpdatedAt sql.NullTime
+}
+
+type ChatInfo struct {
+	Title     string
+	Usernames string
+}
+
+==== ./internal/repository/chat/repository.go ====
+package chat
+
+import (
+	"context"
+
+	sq "github.com/Masterminds/squirrel"
+
+	"github.com/beachrockhotel/chat-server/internal/client/db"
+	"github.com/beachrockhotel/chat-server/internal/model"
+	"github.com/beachrockhotel/chat-server/internal/repository"
+	"github.com/beachrockhotel/chat-server/internal/repository/chat/converter"
+	modelRepo "github.com/beachrockhotel/chat-server/internal/repository/chat/model"
+)
+
+const (
+	tableName       = "chat"
+	idColumn        = "id"
+	titleColumn     = "title"
+	usernamesColumn = "usernames"
+	createdAtColumn = "created_at"
+	updatedAtColumn = "updated_at"
+)
+
+type repo struct {
+	db db.Client
+}
+
+func NewRepository(db db.Client) repository.ChatRepository {
+	return &repo{db: db}
+}
+
+func (r *repo) Create(ctx context.Context, info *model.ChatInfo) (int64, error) {
+	builder := sq.Insert(tableName).
+		PlaceholderFormat(sq.Dollar).
+		Columns(titleColumn, usernamesColumn).
+		Values(info.Title, info.Usernames).
+		Suffix("RETURNING id")
+
+	query, args, err := builder.ToSql()
+	if err != nil {
+		return 0, err
+	}
+
+	q := db.Query{
+		Name:     "chat_repository.Create",
+		QueryRaw: query,
+	}
+
+	var id int64
+	err = r.db.DB().QueryRowContext(ctx, q, args...).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+
+	return id, nil
+}
+
+func (r *repo) Get(ctx context.Context, id int64) (*model.Chat, error) {
+	builder := sq.Select(idColumn, titleColumn, usernamesColumn, createdAtColumn, updatedAtColumn).
+		PlaceholderFormat(sq.Dollar).
+		From(tableName).
+		Where(sq.Eq{idColumn: id}).
+		Limit(1)
+
+	query, args, err := builder.ToSql()
+	if err != nil {
+		return nil, err
+	}
+
+	q := db.Query{
+		Name:     "chat_repository.Get",
+		QueryRaw: query,
+	}
+
+	var chat modelRepo.Chat
+	err = r.db.DB().QueryRowContext(ctx, q, args...).Scan(&chat.ID, &chat.Info.Title, &chat.Info.Usernames, &chat.CreatedAt, &chat.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	return converter.ToChatFromRepo(&chat), nil
+}
+
+==== ./internal/repository/repository.go ====
+package repository
+
+import (
+	"context"
+
+	"github.com/beachrockhotel/chat-server/internal/model"
+)
+
+type ChatRepository interface {
+	Create(ctx context.Context, info *model.ChatInfo) (int64, error)
+	Get(ctx context.Context, id int64) (*model.Chat, error)
+}
+
+==== ./internal/api/chat/get.go ====
+package chat
+
+import (
+	"context"
+	"log"
+
+	"github.com/beachrockhotel/chat-server/internal/converter"
+	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
+)
+
+func (i *Implementation) Get(ctx context.Context, req *desc.GetRequest) (*desc.GetResponse, error) {
+	chatObj, err := i.chatService.Get(ctx, req.GetId())
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("id: %d, title: %s, usernames: %s, created_at: %v, updated_at: %v\n", chatObj.ID, chatObj.Info.Title, chatObj.Info.Usernames, chatObj.CreatedAt, chatObj.UpdatedAt)
+
+	return &desc.GetResponse{
+		Chat: converter.ToChatFromService(chatObj),
+	}, nil
+}
+
+==== ./internal/api/chat/service.go ====
+package chat
+
+import (
+	"github.com/beachrockhotel/chat-server/internal/service"
+	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
+)
+
+type Implementation struct {
+	desc.UnimplementedChatV1Server
+	chatService service.ChatService
+}
+
+func NewImplementation(chatService service.ChatService) *Implementation {
+	return &Implementation{
+		chatService: chatService,
+	}
+}
+
+==== ./internal/api/chat/create.go ====
+package chat
+
+import (
+	"context"
+	"log"
+
+	"github.com/beachrockhotel/chat-server/internal/converter"
+	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
+)
+
+func (i *Implementation) Create(ctx context.Context, req *desc.CreateRequest) (*desc.CreateResponse, error) {
+	id, err := i.chatService.Create(ctx, converter.ToChatInfoFromDesc(req.GetInfo()))
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("inserted user with id: %d", id)
+
+	return &desc.CreateResponse{
+		Id: id,
+	}, nil
+}
+
+==== ./internal/app/service_provider.go ====
+package app
+
+import (
+	"context"
+	"log"
+
+	"github.com/beachrockhotel/chat-server/internal/api/chat"
+	"github.com/beachrockhotel/chat-server/internal/client/db"
+	"github.com/beachrockhotel/chat-server/internal/client/db/pg"
+	"github.com/beachrockhotel/chat-server/internal/client/db/transaction"
+	"github.com/beachrockhotel/chat-server/internal/closer"
+	"github.com/beachrockhotel/chat-server/internal/config"
+	"github.com/beachrockhotel/chat-server/internal/repository"
+	chatRepository "github.com/beachrockhotel/chat-server/internal/repository/chat"
+	"github.com/beachrockhotel/chat-server/internal/service"
+	chatService "github.com/beachrockhotel/chat-server/internal/service/chat"
+)
+
+type serviceProvider struct {
+	pgConfig   config.PGConfig
+	grpcConfig config.GRPCConfig
+
+	dbClient       db.Client
+	txManager      db.TxManager
+	chatRepository repository.ChatRepository
+
+	chatService service.ChatService
+
+	chatImpl *chat.Implementation
+}
+
+func newServiceProvider() *serviceProvider {
+	return &serviceProvider{}
+}
+
+func (s *serviceProvider) PGConfig() config.PGConfig {
+	if s.pgConfig == nil {
+		cfg, err := config.NewPGConfig()
+		if err != nil {
+			log.Fatalf("failed to get pg config: %s", err.Error())
+		}
+
+		s.pgConfig = cfg
+	}
+
+	return s.pgConfig
+}
+
+func (s *serviceProvider) GRPCConfig() config.GRPCConfig {
+	if s.grpcConfig == nil {
+		cfg, err := config.NewGRPCConfig()
+		if err != nil {
+			log.Fatalf("failed to get grpc config: %s", err.Error())
+		}
+
+		s.grpcConfig = cfg
+	}
+
+	return s.grpcConfig
+}
+
+func (s *serviceProvider) DBClient(ctx context.Context) db.Client {
+	if s.dbClient == nil {
+		cl, err := pg.New(ctx, s.PGConfig().DSN())
+		if err != nil {
+			log.Fatalf("failed to create db client: %v", err)
+		}
+
+		err = cl.DB().Ping(ctx)
+		if err != nil {
+			log.Fatalf("ping error: %s", err.Error())
+		}
+		closer.Add(cl.Close)
+
+		s.dbClient = cl
+	}
+
+	return s.dbClient
+}
+
+func (s *serviceProvider) TxManager(ctx context.Context) db.TxManager {
+	if s.txManager == nil {
+		s.txManager = transaction.NewTransactionManager(s.DBClient(ctx).DB())
+	}
+
+	return s.txManager
+}
+
+func (s *serviceProvider) ChatRepository(ctx context.Context) repository.ChatRepository {
+	if s.chatRepository == nil {
+		s.chatRepository = chatRepository.NewRepository(s.DBClient(ctx))
+	}
+
+	return s.chatRepository
+}
+
+func (s *serviceProvider) ChatService(ctx context.Context) service.ChatService {
+	if s.chatService == nil {
+		s.chatService = chatService.NewService(
+			s.ChatRepository(ctx),
+			s.TxManager(ctx),
+		)
+	}
+
+	return s.chatService
+}
+
+func (s *serviceProvider) ChatImpl(ctx context.Context) *chat.Implementation {
+	if s.chatImpl == nil {
+		s.chatImpl = chat.NewImplementation(s.ChatService(ctx))
+	}
+
+	return s.chatImpl
+}
+
+==== ./internal/app/app.go ====
+package app
+
+import (
+	"context"
+	"log"
+	"net"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/reflection"
+
+	"github.com/beachrockhotel/chat-server/internal/closer"
+	"github.com/beachrockhotel/chat-server/internal/config"
+	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
+)
+
+type App struct {
+	serviceProvider *serviceProvider
+	grpcServer      *grpc.Server
+}
+
+func NewApp(ctx context.Context) (*App, error) {
+	a := &App{}
+
+	err := a.initDeps(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return a, nil
+}
+
+func (a *App) Run() error {
+	defer func() {
+		closer.CloseAll()
+		closer.Wait()
+	}()
+
+	return a.runGRPCServer()
+}
+
+func (a *App) initDeps(ctx context.Context) error {
+	inits := []func(context.Context) error{
+		a.initConfig,
+		a.initServiceProvider,
+		a.initGRPCServer,
+	}
+
+	for _, f := range inits {
+		err := f(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (a *App) initConfig(_ context.Context) error {
+	err := config.Load(".env")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (a *App) initServiceProvider(_ context.Context) error {
+	a.serviceProvider = newServiceProvider()
+	return nil
+}
+
+func (a *App) initGRPCServer(ctx context.Context) error {
+	a.grpcServer = grpc.NewServer(grpc.Creds(insecure.NewCredentials()))
+
+	reflection.Register(a.grpcServer)
+
+	desc.RegisterChatV1Server(a.grpcServer, a.serviceProvider.ChatImpl(ctx))
+
+	return nil
+}
+
+func (a *App) runGRPCServer() error {
+	log.Printf("GRPC server is running on %s", a.serviceProvider.GRPCConfig().Address())
+
+	list, err := net.Listen("tcp", a.serviceProvider.GRPCConfig().Address())
+	if err != nil {
+		return err
+	}
+
+	err = a.grpcServer.Serve(list)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+==== ./internal/config/pg.go ====
+package config
+
+import (
+	"errors"
+	"os"
+)
+
+const (
+	dsnEnvName = "PG_DSN"
+)
+
+type PGConfig interface {
+	DSN() string
+}
+
+type pgConfig struct {
+	dsn string
+}
+
+func NewPGConfig() (PGConfig, error) {
+	dsn := os.Getenv(dsnEnvName)
+	if len(dsn) == 0 {
+		return nil, errors.New("pg dsn not found")
+	}
+
+	return &pgConfig{
+		dsn: dsn,
+	}, nil
+}
+
+func (cfg *pgConfig) DSN() string {
+	return cfg.dsn
+}
+
+==== ./internal/config/config.go ====
+package config
+
+import (
+	"github.com/joho/godotenv"
+)
+
+func Load(path string) error {
+	err := godotenv.Load(path)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+==== ./internal/config/grpc.go ====
+package config
+
+import (
+	"net"
+	"os"
+
+	"github.com/pkg/errors"
+)
+
+const (
+	grpcHostEnvName = "GRPC_HOST"
+	grpcPortEnvName = "GRPC_PORT"
+)
+
+type GRPCConfig interface {
+	Address() string
+}
+
+type grpcConfig struct {
+	host string
+	port string
+}
+
+func NewGRPCConfig() (GRPCConfig, error) {
+	host := os.Getenv(grpcHostEnvName)
+	if len(host) == 0 {
+		return nil, errors.New("grpc host not found")
+	}
+
+	port := os.Getenv(grpcPortEnvName)
+	if len(port) == 0 {
+		return nil, errors.New("grpc port not found")
+	}
+
+	return &grpcConfig{
+		host: host,
+		port: port,
+	}, nil
+}
+
+func (cfg *grpcConfig) Address() string {
+	return net.JoinHostPort(cfg.host, cfg.port)
+}
+
+==== ./sources_dump.txt ====
+
+==== ./migration.sh ====
+#!/bin/bash
+source .env
+
+export MIGRATION_DSN="host=pg port=5432 dbname=$PG_DATABASE_NAME user=$PG_USER password=$PG_PASSWORD sslmode=disable"
+
+sleep 2 && goose -dir "${MIGRATION_DIR}" postgres "${MIGRATION_DSN}" up -v
+==== ./migrations/20250422234533_chat_table.sql ====
+-- +goose Up
+create table chat (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    usernames TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- +goose Down
+drop table chat;
+==== ./docker-compose.yml ====
+version: '3'
+
+volumes:
+  postgres_volume:
+
+services:
+  pg:
+    image: postgres:14-alpine3.17
+    environment:
+      - "POSTGRES_DB=${PG_DATABASE_NAME}"
+      - "POSTGRES_USER=${PG_USER}"
+      - "POSTGRES_PASSWORD=${PG_PASSWORD}"
+
+    ports:
+      - "${PG_PORT}:5432"
+    volumes:
+      - postgres_volume:/val/lib/postgre/data
+
+  migrator:
+    build:
+      context: postgre
+      dockerfile: migration.Dockerfile
+    restart: on-failure
+    environment:
+      DB_HOST: db
+==== ./api/chat_v1/chat.proto ====
+syntax = "proto3";
+
+package chat_v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/beachrockhotel/chat-server/pkg/chat_v1;chat_v1";
+
+service ChatV1 {
+  rpc Create(CreateRequest) returns (CreateResponse);
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Delete(DeleteRequest) returns (google.protobuf.Empty);
+  rpc SendMessage(SendMessageRequest) returns (google.protobuf.Empty);
+}
+
+message Chat {
+  int64 id = 1;
+  ChatInfo info = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message ChatInfo {
+  string title = 1;
+  string usernames = 2;
+}
+
+message CreateRequest {
+  ChatInfo info = 1;
+}
+
+message CreateResponse {
+  int64 id = 1;
+}
+
+message GetRequest {
+  int64 id = 1;
+}
+
+message GetResponse {
+  Chat chat = 1;
+}
+
+message DeleteRequest {
+  int64 id = 1;
+}
+
+message SendMessageRequest {
+  string from = 1;
+  string text = 2;
+  google.protobuf.Timestamp created_at = 3;
+}
+==== ./migration.Dockerfile ====
+FROM alpine:3.13
+
+RUN apk update && \
+    apk upgrade && \
+    apk add bash && \
+    rm -rf /var/cache/apk/*
+
+ADD https://github.com/pressly/goose/releases/download/v3.14.0/goose_linux_x86_64 /bin/goose
+RUN chmod +x /bin/goose
+
+WORKDIR /root
+
+ADD ../migrations/*.sql migrations/
+ADD migration.sh .
+ADD .env .
+
+RUN chmod +x migration.sh
+
+ENTRYPOINT ["bash", "migration.sh"]
+==== ./.env ====
+PG_DATABASE_NAME=chat
+PG_USER=chat-user
+PG_PASSWORD=chat-password
+PG_PORT=54321
+MIGRATION_DIR=./migrations
+==== ./cmd/grpc_server/main.go ====
+package main
+
+import (
+	"context"
+	"log"
+
+	"github.com/beachrockhotel/chat-server/internal/app"
+)
+
+func main() {
+	ctx := context.Background()
+
+	a, err := app.NewApp(ctx)
+	if err != nil {
+		log.Fatalf("failed to init app: %s", err.Error())
+	}
+
+	err = a.Run()
+	if err != nil {
+		log.Fatalf("failed to run app: %s", err.Error())
+	}
+}
+
