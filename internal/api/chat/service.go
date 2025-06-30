@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"github.com/beachrockhotel/chat-server/internal/service"
 	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
 	"sync"
 )
@@ -13,6 +14,8 @@ type Chat struct {
 type Implementation struct {
 	desc.UnimplementedChatV1Server
 
+	chatService service.ChatService
+
 	chats  map[string]*Chat
 	mxChat sync.RWMutex
 
@@ -20,9 +23,10 @@ type Implementation struct {
 	mxChannel sync.RWMutex
 }
 
-func NewImplementation() *Implementation {
+func NewImplementation(chatService service.ChatService) *Implementation {
 	return &Implementation{
-		chats:    make(map[string]*Chat),
-		channels: make(map[string]chan *desc.Message),
+		chatService: chatService,
+		chats:       make(map[string]*Chat),
+		channels:    make(map[string]chan *desc.Message),
 	}
 }

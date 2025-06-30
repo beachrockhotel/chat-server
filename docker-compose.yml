@@ -14,11 +14,11 @@ services:
     ports:
       - "${PG_PORT}:5432"
     volumes:
-      - postgres_volume:/val/lib/postgre/data
+      - postgres_volume:/var/lib/postgresql/data
 
   migrator:
     build:
-      context: postgre
+      context: .
       dockerfile: migration.Dockerfile
     restart: on-failure
     environment:

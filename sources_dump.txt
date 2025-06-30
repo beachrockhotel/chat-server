@@ -678,6 +678,70 @@ func (s *serv) Create(ctx context.Context, info *model.ChatInfo) (int64, error) 
 	return id, nil
 }
 
+==== ./internal/service/chat/service_test.go ====
+package chat_test
+
+import (
+	"context"
+	"testing"
+
+	"github.com/beachrockhotel/chat-server/internal/client/db"
+	"github.com/beachrockhotel/chat-server/internal/model"
+	"github.com/beachrockhotel/chat-server/internal/service/chat"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+)
+
+// Мок репозитория
+type mockRepo struct {
+	mock.Mock
+}
+
+func (m *mockRepo) Create(ctx context.Context, info *model.ChatInfo) (int64, error) {
+	args := m.Called(ctx, info)
+	return int64(args.Int(0)), args.Error(1)
+}
+
+func (m *mockRepo) Get(ctx context.Context, id int64) (*model.Chat, error) {
+	args := m.Called(ctx, id)
+	return args.Get(0).(*model.Chat), args.Error(1)
+}
+
+// Мок TxManager
+type mockTx struct {
+	mock.Mock
+}
+
+func (m *mockTx) ReadCommitted(ctx context.Context, f db.Handler) error {
+	return f(ctx)
+}
+
+func TestCreate(t *testing.T) {
+	repo := &mockRepo{}
+	tx := &mockTx{}
+
+	s := chat.NewService(repo, tx)
+
+	repo.On("Create", mock.Anything, mock.Anything).Return(1, nil)
+	repo.On("Get", mock.Anything, int64(1)).Return(&model.Chat{ID: 1}, nil)
+
+	id, err := s.Create(context.Background(), &model.ChatInfo{Title: "Test"})
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), id)
+}
+
+func TestGet(t *testing.T) {
+	repo := &mockRepo{}
+	tx := &mockTx{}
+	s := chat.NewService(repo, tx)
+
+	repo.On("Get", mock.Anything, int64(1)).Return(&model.Chat{ID: 1}, nil)
+
+	chatObj, err := s.Get(context.Background(), 1)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), chatObj.ID)
+}
+
 ==== ./internal/repository/chat/converter/chat.go ====
 package converter
 
@@ -700,6 +764,44 @@ func ToChatInfoFromRepo(info modelRepo.ChatInfo) model.ChatInfo {
 		Title:     info.Title,
 		Usernames: info.Usernames,
 	}
+}
+
+==== ./internal/repository/chat/repository_test.go ====
+package chat_test
+
+import (
+	"context"
+	"github.com/joho/godotenv"
+	"os"
+	"testing"
+
+	"github.com/beachrockhotel/chat-server/internal/client/db/pg"
+	"github.com/beachrockhotel/chat-server/internal/model"
+	chatRepo "github.com/beachrockhotel/chat-server/internal/repository/chat"
+	"github.com/stretchr/testify/require"
+)
+
+func TestCreateAndGet(t *testing.T) {
+	_ = godotenv.Load(".env")
+
+	dsn := os.Getenv("PG_DSN")
+	ctx := context.Background()
+
+	client, err := pg.New(ctx, dsn)
+	require.NoError(t, err)
+	defer client.Close()
+
+	repo := chatRepo.NewRepository(client)
+
+	id, err := repo.Create(ctx, &model.ChatInfo{
+		Title:     "Test Chat",
+		Usernames: "user1,user2",
+	})
+	require.NoError(t, err)
+
+	chatObj, err := repo.Get(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, "Test Chat", chatObj.Info.Title)
 }
 
 ==== ./internal/repository/chat/model/сhat.go ====
@@ -820,6 +922,59 @@ type ChatRepository interface {
 	Get(ctx context.Context, id int64) (*model.Chat, error)
 }
 
+==== ./internal/api/chat/connect_chat.go ====
+package chat
+
+import (
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
+)
+
+func (i *Implementation) ConnectChat(req *desc.ConnectChatRequest, stream desc.ChatV1_ConnectChatServer) error {
+	i.mxChannel.RLock()
+	chatChan, ok := i.channels[req.GetChatId()]
+	i.mxChannel.RUnlock()
+
+	if !ok {
+		return status.Errorf(codes.NotFound, "chat not found")
+	}
+
+	i.mxChat.Lock()
+	if _, okChat := i.chats[req.GetChatId()]; !okChat {
+		i.chats[req.GetChatId()] = &Chat{
+			streams: make(map[string]desc.ChatV1_ConnectChatServer),
+		}
+	}
+	i.mxChat.Unlock()
+
+	i.chats[req.GetChatId()].m.Lock()
+	i.chats[req.GetChatId()].streams[req.GetUsername()] = stream
+	i.chats[req.GetChatId()].m.Unlock()
+
+	for {
+		select {
+		case msg, okCh := <-chatChan:
+			if !okCh {
+				return nil
+			}
+
+			for _, st := range i.chats[req.GetChatId()].streams {
+				if err := st.Send(msg); err != nil {
+					return err
+				}
+			}
+
+		case <-stream.Context().Done():
+			i.chats[req.GetChatId()].m.Lock()
+			delete(i.chats[req.GetChatId()].streams, req.GetUsername())
+			i.chats[req.GetChatId()].m.Unlock()
+			return nil
+		}
+	}
+}
+
 ==== ./internal/api/chat/get.go ====
 package chat
 
@@ -850,17 +1005,59 @@ package chat
 import (
 	"github.com/beachrockhotel/chat-server/internal/service"
 	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
+	"sync"
 )
+
+type Chat struct {
+	streams map[string]desc.ChatV1_ConnectChatServer
+	m       sync.RWMutex
+}
 
 type Implementation struct {
 	desc.UnimplementedChatV1Server
+
 	chatService service.ChatService
+
+	chats  map[string]*Chat
+	mxChat sync.RWMutex
+
+	channels  map[string]chan *desc.Message
+	mxChannel sync.RWMutex
 }
 
 func NewImplementation(chatService service.ChatService) *Implementation {
 	return &Implementation{
 		chatService: chatService,
+		chats:       make(map[string]*Chat),
+		channels:    make(map[string]chan *desc.Message),
 	}
+}
+
+==== ./internal/api/chat/send_message.go ====
+package chat
+
+import (
+	"context"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
+
+	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
+)
+
+func (i *Implementation) SendMessage(ctx context.Context, req *desc.SendMessageRequest) (*emptypb.Empty, error) {
+	i.mxChannel.RLock()
+	chatChan, ok := i.channels[req.GetChatId()]
+	i.mxChannel.RUnlock()
+
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "chat not found")
+	}
+
+	chatChan <- req.GetMessage()
+
+	return &emptypb.Empty{}, nil
 }
 
 ==== ./internal/api/chat/create.go ====
@@ -886,6 +1083,117 @@ func (i *Implementation) Create(ctx context.Context, req *desc.CreateRequest) (*
 		Id: id,
 	}, nil
 }
+
+==== ./internal/api/chat/service_test.go ====
+package chat_test
+
+import (
+	"context"
+	"log"
+	"net"
+	"testing"
+
+	"github.com/beachrockhotel/chat-server/internal/api/chat"
+	"github.com/beachrockhotel/chat-server/internal/model"
+	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/test/bufconn"
+)
+
+// Мок сервиса
+type mockChatService struct {
+	mock.Mock
+}
+
+func (m *mockChatService) Create(ctx context.Context, info *model.ChatInfo) (int64, error) {
+	args := m.Called(ctx, info)
+	return int64(args.Int(0)), args.Error(1)
+}
+
+func (m *mockChatService) Get(ctx context.Context, id int64) (*model.Chat, error) {
+	args := m.Called(ctx, id)
+	return args.Get(0).(*model.Chat), args.Error(1)
+}
+
+func dialer(srv desc.ChatV1Server) func(context.Context, string) (net.Conn, error) {
+	lis := bufconn.Listen(1024 * 1024)
+	s := grpc.NewServer()
+	desc.RegisterChatV1Server(s, srv)
+	go func() {
+		if err := s.Serve(lis); err != nil {
+			log.Fatal(err)
+		}
+	}()
+	return func(ctx context.Context, s string) (net.Conn, error) {
+		return lis.Dial()
+	}
+}
+
+func TestCreate(t *testing.T) {
+	mockSvc := &mockChatService{}
+	impl := chat.NewImplementation(mockSvc)
+
+	mockSvc.On("Create", mock.Anything, mock.Anything).Return(123, nil)
+
+	conn, err := grpc.DialContext(context.Background(), "", grpc.WithInsecure(), grpc.WithContextDialer(dialer(impl)))
+	require.NoError(t, err)
+	client := desc.NewChatV1Client(conn)
+
+	resp, err := client.Create(context.Background(), &desc.CreateRequest{
+		Info: &desc.ChatInfo{Title: "Test", Usernames: "User1,User2"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(123), resp.GetId())
+}
+
+func TestGet(t *testing.T) {
+	mockSvc := &mockChatService{}
+	impl := chat.NewImplementation(mockSvc)
+
+	mockSvc.On("Get", mock.Anything, int64(1)).Return(&model.Chat{ID: 1, Info: model.ChatInfo{Title: "Test"}}, nil)
+
+	conn, err := grpc.DialContext(context.Background(), "", grpc.WithInsecure(), grpc.WithContextDialer(dialer(impl)))
+	require.NoError(t, err)
+	client := desc.NewChatV1Client(conn)
+
+	resp, err := client.Get(context.Background(), &desc.GetRequest{Id: 1})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), resp.GetChat().GetId())
+	assert.Equal(t, "Test", resp.GetChat().GetInfo().GetTitle())
+}
+
+==== ./internal/api/chat/create_chat.go ====
+package chat
+
+import (
+	"context"
+
+	"github.com/google/uuid"
+	"google.golang.org/protobuf/types/known/emptypb"
+
+	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
+)
+
+func (i *Implementation) CreateChat(ctx context.Context, _ *emptypb.Empty) (*desc.CreateChatResponse, error) {
+	chatID, err := uuid.NewUUID()
+	if err != nil {
+		return nil, err
+	}
+
+	i.channels[chatID.String()] = make(chan *desc.Message, 100)
+
+	return &desc.CreateChatResponse{
+		ChatId: chatID.String(),
+	}, nil
+}
+
+// chat (chat_id)(u1, u2, u3...)
+// u1 -> chat stream
+// u2 -> chat stream
+// u3 -> chat stream
 
 ==== ./internal/app/service_provider.go ====
 package app
@@ -1204,9 +1512,11 @@ func (cfg *grpcConfig) Address() string {
 #!/bin/bash
 source .env
 
+export MIGRATION_DIR=migrations
 export MIGRATION_DSN="host=pg port=5432 dbname=$PG_DATABASE_NAME user=$PG_USER password=$PG_PASSWORD sslmode=disable"
 
 sleep 2 && goose -dir "${MIGRATION_DIR}" postgres "${MIGRATION_DSN}" up -v
+
 ==== ./migrations/20250422234533_chat_table.sql ====
 -- +goose Up
 create table chat (
@@ -1236,11 +1546,11 @@ services:
     ports:
       - "${PG_PORT}:5432"
     volumes:
-      - postgres_volume:/val/lib/postgre/data
+      - postgres_volume:/var/lib/postgresql/data
 
   migrator:
     build:
-      context: postgre
+      context: .
       dockerfile: migration.Dockerfile
     restart: on-failure
     environment:
@@ -1253,13 +1563,15 @@ package chat_v1;
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
 
-option go_package = "github.com/beachrockhotel/chat-server/pkg/chat_v1;chat_v1";
+option go_package = "github.com/beachrockhotel/chat-server/pkg/chat;chat";
 
 service ChatV1 {
   rpc Create(CreateRequest) returns (CreateResponse);
   rpc Get(GetRequest) returns (GetResponse);
   rpc Delete(DeleteRequest) returns (google.protobuf.Empty);
-  rpc SendMessage(SendMessageRequest) returns (google.protobuf.Empty);
+  rpc CreateChat(google.protobuf.Empty) returns (CreateChatResponse);
+  rpc ConnectChat (ConnectChatRequest) returns (stream Message);
+  rpc SendMessage (SendMessageRequest) returns (google.protobuf.Empty);
 }
 
 message Chat {
@@ -1295,10 +1607,25 @@ message DeleteRequest {
 }
 
 message SendMessageRequest {
+  string chat_id = 1;
+  Message message = 2;
+}
+
+message Message {
   string from = 1;
   string text = 2;
   google.protobuf.Timestamp created_at = 3;
 }
+
+message CreateChatResponse {
+  string chat_id = 1;
+}
+
+message ConnectChatRequest {
+  string chat_id = 1;
+  string username = 2;
+}
+
 ==== ./migration.Dockerfile ====
 FROM alpine:3.13
 
@@ -1312,6 +1639,7 @@ RUN chmod +x /bin/goose
 
 WORKDIR /root
 
+ADD migrations/ migrations/
 ADD ../migrations/*.sql migrations/
 ADD migration.sh .
 ADD .env .
@@ -1323,8 +1651,156 @@ ENTRYPOINT ["bash", "migration.sh"]
 PG_DATABASE_NAME=chat
 PG_USER=chat-user
 PG_PASSWORD=chat-password
-PG_PORT=54321
+PG_PORT=54322
 MIGRATION_DIR=./migrations
+PG_DSN=postgres://chat-user:chat-password@localhost:54322/chat?sslmode=disable
+==== ./cmd/grpc_client/main.go ====
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"sync"
+	"time"
+
+	"github.com/brianvoe/gofakeit"
+	"github.com/fatih/color"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	desc "github.com/beachrockhotel/chat-server/pkg/chat_v1"
+)
+
+const (
+	address = "localhost:50051"
+)
+
+func main() {
+	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatalf("failed to connect to server: %v", err)
+	}
+	defer conn.Close()
+
+	ctx := context.Background()
+	client := desc.NewChatV1Client(conn)
+
+	// Создаем новый чат на сервере
+	chatID, err := createChat(ctx, client)
+	if err != nil {
+		log.Fatalf("failed to create chat: %v", err)
+	}
+
+	log.Printf(fmt.Sprintf("%s: %s\n", color.GreenString("Chat created"), color.YellowString(chatID)))
+
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+
+	// Подключаемся к чату от имени пользователя dima
+	go func() {
+		defer wg.Done()
+
+		err = connectChat(ctx, client, chatID, "dima", 10*time.Second)
+		if err != nil {
+			log.Fatalf("failed to connect chat: %v", err)
+		}
+	}()
+
+	// Подключаемся к чату от имени пользователя julia
+	go func() {
+		defer wg.Done()
+
+		err = connectChat(ctx, client, chatID, "julia", 7*time.Second)
+		if err != nil {
+			log.Fatalf("failed to connect chat: %v", err)
+		}
+	}()
+
+	wg.Wait()
+}
+
+func connectChat(ctx context.Context, client desc.ChatV1Client, chatID string, username string, period time.Duration) error {
+	stream, err := client.ConnectChat(ctx, &desc.ConnectChatRequest{
+		ChatId:   chatID,
+		Username: username,
+	})
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		for {
+			message, errRecv := stream.Recv()
+			if errRecv == io.EOF {
+				return
+			}
+			if errRecv != nil {
+				log.Println("failed to receive message from stream: ", errRecv)
+				return
+			}
+
+			log.Printf("[%v] - [from: %s]: %s\n",
+				color.YellowString(message.GetCreatedAt().AsTime().Format(time.RFC3339)),
+				color.BlueString(message.GetFrom()),
+				message.GetText(),
+			)
+		}
+	}()
+
+	for {
+		// Ниже пример того, как можно считывать сообщения из консоли
+		// в демонстрационных целях будем засылать в чат рандомный текст раз в 5 секунд
+		//scanner := bufio.NewScanner(os.Stdin)
+		//var lines strings.Builder
+		//
+		//for {
+		//	scanner.Scan()
+		//	line := scanner.Text()
+		//	if len(line) == 0 {
+		//		break
+		//	}
+		//
+		//	lines.WriteString(line)
+		//	lines.WriteString("\n")
+		//}
+		//
+		//err = scanner.Err()
+		//if err != nil {
+		//	log.Println("failed to scan message: ", err)
+		//}
+
+		time.Sleep(period)
+
+		text := gofakeit.Word()
+
+		_, err = client.SendMessage(ctx, &desc.SendMessageRequest{
+			ChatId: chatID,
+			Message: &desc.Message{
+				From:      username,
+				Text:      text,
+				CreatedAt: timestamppb.Now(),
+			},
+		})
+		if err != nil {
+			log.Println("failed to send message: ", err)
+			return err
+		}
+	}
+}
+
+func createChat(ctx context.Context, client desc.ChatV1Client) (string, error) {
+	res, err := client.CreateChat(ctx, &emptypb.Empty{})
+	if err != nil {
+		return "", err
+	}
+
+	return res.GetChatId(), nil
+}
+
 ==== ./cmd/grpc_server/main.go ====
 package main
 

@@ -43,21 +43,21 @@ func main() {
 	wg := sync.WaitGroup{}
 	wg.Add(2)
 
-	// Подключаемся к чату от имени пользователя oleg
+	// Подключаемся к чату от имени пользователя dima
 	go func() {
 		defer wg.Done()
 
-		err = connectChat(ctx, client, chatID, "oleg", 5*time.Second)
+		err = connectChat(ctx, client, chatID, "dima", 10*time.Second)
 		if err != nil {
 			log.Fatalf("failed to connect chat: %v", err)
 		}
 	}()
 
-	// Подключаемся к чату от имени пользователя ivan
+	// Подключаемся к чату от имени пользователя julia
 	go func() {
 		defer wg.Done()
 
-		err = connectChat(ctx, client, chatID, "ivan", 7*time.Second)
+		err = connectChat(ctx, client, chatID, "julia", 7*time.Second)
 		if err != nil {
 			log.Fatalf("failed to connect chat: %v", err)
 		}
