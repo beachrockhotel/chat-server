@@ -13,7 +13,7 @@ import (
 )
 
 func TestCreateAndGet(t *testing.T) {
-	_ = godotenv.Load(".env") // или "../../.env" если нужно
+	_ = godotenv.Load(".env")
 
 	dsn := os.Getenv("PG_DSN")
 	ctx := context.Background()
